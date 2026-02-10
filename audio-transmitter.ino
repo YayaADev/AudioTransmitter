@@ -19,10 +19,13 @@ const int CHANNELS = 2;
 const int BITS_PER_SAMPLE = 16;
 
 // Hardware
-const int SPDIF_GPIO_PIN = 27;
+const int SPDIF_GPIO_PIN = 22;
+const int IR_LED_GPIO = 21;
 const int STATUS_LED_PIN = 2;
 
-size_t RING_BUFFER_SIZE = 16384;  // runtime size (set after PSRAM alloc)
+bool soundbarAwake = false;
+
+size_t RING_BUFFER_SIZE = 16384;  // set after PSRAM alloc
 constexpr size_t MIN_BUFFER_FOR_PLAYBACK = 4096;
 constexpr size_t AUDIO_CHUNK_SIZE = 1024;
 
@@ -41,21 +44,15 @@ unsigned long lastStatsTime = 0;
 size_t totalBytesProcessed = 0;
 size_t packetsReceived = 0;
 
-// IR blaster
-IRsend irsend(25);  // GPIO 25 (breadboard LED)
+IRsend irsend(IR_LED_GPIO);  
 
-// The sony configs i got are in the github too on why these values
-const uint32_t SONY_POWER = 0xA90;   // 12-bit Sony
-const uint32_t SONY_INPUT = 0x48;    // 12-bit Sony
+// The sony configs i got are in the github gist
+const uint32_t SONY_POWER = 0x540C;
 
-void wakeAndSelectOptical() {
-  Serial.println("[IR] blasting POWER + INPUT …");
-  irsend.sendSony(SONY_POWER, 12);  // wake
-  delay(1500);
-  irsend.sendSony(SONY_INPUT, 12);  // not sure if this actually works
-  delay(500);
-  irsend.sendSony(SONY_INPUT, 12);  // back to "TV"
-  Serial.println("[IR] done – bar should show 'TV'");
+void wakeSoundbar() {
+  Serial.println("[IR] Sending power...");
+  irsend.sendSony38(SONY_POWER, 15, 2);
+  Serial.println("[IR] Done");
 }
 
 size_t getBufferedBytes() {
@@ -72,6 +69,10 @@ size_t getFreeSpace() {
 
 // Network Callback
 void onPacket(AsyncUDPPacket packet) {
+  if (!soundbarAwake) {
+    soundbarAwake = true;
+    wakeSoundbar();
+  }
   packetsReceived++;
   const uint8_t* data = packet.data();
   size_t len = packet.length();
@@ -91,10 +92,10 @@ void onPacket(AsyncUDPPacket packet) {
 
 void setupUDPServer() {
   if (udp.listen(udpPort)) {
-    Serial.printf("✓ UDP Listening on port %d\n", udpPort);
+    Serial.printf("UDP Listening on port %d\n", udpPort);
     udp.onPacket(onPacket);
   } else {
-    Serial.println("✗ UDP listener failed!");
+    Serial.println("UDP listener failed!");
   }
 }
 
@@ -104,12 +105,11 @@ void setup() {
   Serial.println("\n ESP32 S/PDIF Transmitter + IR");
 
   pinMode(STATUS_LED_PIN, OUTPUT);
-  digitalWrite(SPDIF_GPIO_PIN, LOW);
-  Serial.println("GPIO27 configured as OUTPUT");
 
   // IR LED pin
-  pinMode(25, OUTPUT);
-  digitalWrite(25, LOW);
+  pinMode(IR_LED_GPIO, OUTPUT);
+  irsend.begin();
+  digitalWrite(IR_LED_GPIO, LOW);
 
   WiFi.mode(WIFI_STA);
   WiFi.begin(ssid, password);
@@ -139,10 +139,10 @@ void setup() {
     }
   }
 
-  Serial.println("✓ S/PDIF Output Initialized");
+  Serial.println(" S/PDIF Output Initialized");
 
   if (MDNS.begin("esp32-spdif")) {
-    Serial.println("✓ mDNS responder started: esp32-spdif.local");
+    Serial.println("mDNS responder started: esp32-spdif.local");
   }
 
   // PSRAM buffer
@@ -154,20 +154,18 @@ void setup() {
   RING_BUFFER_SIZE = ringBuffer ? 256 * 1024 : 32 * 1024;
   read_pos = write_pos = bytes_in_buffer = 0;
 
-  Serial.printf("✓ Ring buffer allocated: %d KB (%s)\n",
+  Serial.printf(" Ring buffer allocated: %d KB (%s)\n",
                 RING_BUFFER_SIZE / 1024,
                 (RING_BUFFER_SIZE > 32 * 1024) ? "PSRAM" : "RAM");
 
   setupUDPServer();
-
-  Serial.println("Serial commands: 'i' = IR test, 't' = LED test");
 }
 
 // Main Loop
 void loop() {
   if (Serial.available()) {
     char c = Serial.read();
-    if (c == 'i') wakeAndSelectOptical();
+    if (c == 'i') wakeSoundbar();
   }
 
   // Audio streaming
